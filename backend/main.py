@@ -60,9 +60,22 @@ class FocusServer:
             print("Focus Server started in MOCK mode")
         else:
             self._engine = FocusEngine()
-            self._capture = cv2.VideoCapture(0)
+            self._capture = cv2.VideoCapture(1)  # Use camera 1 on this Mac
             if not self._capture.isOpened():
                 raise RuntimeError("Could not open camera")
+
+            # Warm up camera - macOS needs this
+            print("Warming up camera...")
+            time.sleep(2)
+            for attempt in range(50):
+                ret, frame = self._capture.read()
+                if ret and frame is not None:
+                    print(f"Camera ready! (took {attempt + 1} attempts)")
+                    break
+                time.sleep(0.1)
+            else:
+                raise RuntimeError("Could not read from camera")
+
             print("Focus Server started with camera")
 
         # Start vision processing in background thread

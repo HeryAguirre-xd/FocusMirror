@@ -91,9 +91,9 @@ class FocusEngine:
             output_face_blendshapes=False,
             output_facial_transformation_matrixes=False,
             num_faces=1,
-            min_face_detection_confidence=0.5,
-            min_face_presence_confidence=0.5,
-            min_tracking_confidence=0.5
+            min_face_detection_confidence=0.3,
+            min_face_presence_confidence=0.3,
+            min_tracking_confidence=0.3
         )
         self.landmarker = vision.FaceLandmarker.create_from_options(options)
 
@@ -395,20 +395,49 @@ class MockFocusEngine:
 def run_debug_mode():
     """Run vision engine with debug overlay."""
     print("Starting Focus Mirror Vision Engine (Debug Mode)")
-    print("Press 'q' to quit")
+    print("Press Ctrl+C to quit")
+    print("-" * 50)
 
-    cap = cv2.VideoCapture(0)
+    # Open camera (use camera 1 on this Mac)
+    print("Opening camera...")
+    cap = cv2.VideoCapture(1)
+
     if not cap.isOpened():
         print("Error: Could not open camera")
         return
 
+    # Give camera time to warm up - macOS needs this
+    print("Warming up camera (this may take a few seconds)...")
+    time.sleep(2)
+
+    # Try reading frames until we get one
+    for attempt in range(50):
+        ret, frame = cap.read()
+        if ret and frame is not None:
+            print(f"Camera ready! (took {attempt + 1} attempts)")
+            break
+        time.sleep(0.1)
+    else:
+        print("Error: Could not read from camera after 50 attempts")
+        cap.release()
+        return
+
     engine = FocusEngine()
+    frame_count = 0
+    failed_frames = 0
 
     try:
         while True:
             ret, frame = cap.read()
             if not ret:
-                break
+                failed_frames += 1
+                if failed_frames > 30:
+                    print("\nError: Could not read frames from camera")
+                    break
+                time.sleep(0.1)
+                continue
+
+            failed_frames = 0
 
             # Mirror the frame for more intuitive feedback
             frame = cv2.flip(frame, 1)
@@ -417,17 +446,30 @@ def run_debug_mode():
             metrics = engine.process_frame(frame)
             focus_score = engine.get_focus_score(metrics)
 
-            # Draw debug overlay
-            frame = engine.draw_debug_overlay(frame, metrics, focus_score)
+            # Print metrics to terminal
+            frame_count += 1
+            if frame_count % 10 == 0:  # Print every 10 frames
+                grace = "(grace)" if engine.is_grace_active else ""
+                face = "YES" if metrics.face_detected else "NO "
+                print(f"\rFace: {face} | Gaze: {metrics.gaze_score:.2f} | Posture: {metrics.posture_score:.2f} | Focus: {focus_score:.2f} {grace}   ", end="", flush=True)
 
-            cv2.imshow("Focus Mirror - Debug", frame)
+            # Try to show window (may not work on all systems)
+            try:
+                frame = engine.draw_debug_overlay(frame, metrics, focus_score)
+                cv2.imshow("Focus Mirror - Debug", frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+            except Exception:
+                pass  # Window display not available
 
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-
+    except KeyboardInterrupt:
+        print("\n\nStopped by user")
     finally:
         cap.release()
-        cv2.destroyAllWindows()
+        try:
+            cv2.destroyAllWindows()
+        except Exception:
+            pass
         engine.release()
 
 
