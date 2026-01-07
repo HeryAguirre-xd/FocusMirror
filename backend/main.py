@@ -262,31 +262,48 @@ async def websocket_endpoint(websocket: WebSocket):
 
     await server.register(websocket)
 
-    try:
-        while True:
-            # Send current state
-            state = server.get_state()
-            await websocket.send_json(state)
+    async def send_loop():
+        """Send focus updates at ~30fps."""
+        try:
+            while True:
+                state = server.get_state()
+                await websocket.send_json(state)
+                await asyncio.sleep(0.033)  # ~30fps
+        except Exception:
+            pass
 
-            # Check for incoming messages (for future bidirectional features)
-            try:
-                # Non-blocking receive with short timeout
-                message = await asyncio.wait_for(
-                    websocket.receive_text(),
-                    timeout=0.033  # ~30fps
-                )
-                # Handle client messages if needed
+    async def receive_loop():
+        """Handle incoming messages from client."""
+        try:
+            while True:
+                message = await websocket.receive_text()
                 data = json.loads(message)
                 if data.get("type") == "get_session":
                     summary = server.get_session_summary()
                     await websocket.send_json({"type": "session", "data": summary})
-            except asyncio.TimeoutError:
-                pass  # No message received, continue
+        except Exception:
+            pass
+
+    try:
+        # Run send and receive loops concurrently
+        send_task = asyncio.create_task(send_loop())
+        receive_task = asyncio.create_task(receive_loop())
+
+        # Wait for either task to complete (usually means disconnect)
+        done, pending = await asyncio.wait(
+            [send_task, receive_task],
+            return_when=asyncio.FIRST_COMPLETED
+        )
+
+        # Cancel pending tasks
+        for task in pending:
+            task.cancel()
 
     except WebSocketDisconnect:
-        server.unregister(websocket)
+        pass
     except Exception as e:
         print(f"WebSocket error: {e}")
+    finally:
         server.unregister(websocket)
 
 

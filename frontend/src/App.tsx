@@ -1,34 +1,28 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from '/vite.svg'
-import './App.css'
+import { useFocusSocket } from './hooks/useFocusSocket'
+import { FocusCanvas } from './components/FocusCanvas'
+import { SessionOverlay } from './components/SessionOverlay'
 
 function App() {
-  const [count, setCount] = useState(0)
+  const { focusScore, session, connected, requestSessionSummary } = useFocusSocket()
 
   return (
-    <>
-      <div>
-        <a href="https://vite.dev" target="_blank">
-          <img src={viteLogo} className="logo" alt="Vite logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
+    <div className="w-full h-full relative">
+      {/* Main ambient canvas */}
+      <FocusCanvas focusScore={focusScore} />
+
+      {/* Session stats overlay (Escape key) */}
+      <SessionOverlay
+        session={session}
+        connected={connected}
+        requestSessionSummary={requestSessionSummary}
+      />
+
+      {/* Connection indicator (bottom-left) */}
+      <div className="fixed bottom-4 left-4 flex items-center gap-2 text-white/50 text-xs">
+        <div className={`w-2 h-2 rounded-full ${connected ? 'bg-green-500' : 'bg-amber-500 animate-pulse'}`} />
+        {connected ? `Focus: ${focusScore.toFixed(2)}` : 'Connecting...'}
       </div>
-      <h1>Vite + React</h1>
-      <div className="card">
-        <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.tsx</code> and save to test HMR
-        </p>
-      </div>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
-    </>
+    </div>
   )
 }
 

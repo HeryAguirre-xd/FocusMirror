@@ -1,16 +1,32 @@
 """
 Focus Mirror Vision Engine
-Uses MediaPipe Face Mesh for gaze tracking and focus detection.
+Uses MediaPipe Face Landmarker for gaze tracking and focus detection.
 """
 
 import cv2
 import numpy as np
 import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
 import time
 import argparse
+import urllib.request
+import os
 from dataclasses import dataclass
-from typing import Optional, Callable
-import math
+from typing import Optional
+
+
+# Model path
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "face_landmarker.task")
+MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+
+
+def download_model():
+    """Download the face landmarker model if not present."""
+    if not os.path.exists(MODEL_PATH):
+        print("Downloading face landmarker model...")
+        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+        print("Model downloaded.")
 
 
 @dataclass
@@ -26,12 +42,12 @@ class FocusEngine:
     """
     Processes webcam frames to calculate focus_score.
 
-    Uses MediaPipe Face Mesh for:
+    Uses MediaPipe Face Landmarker for:
     - Iris tracking (gaze direction)
     - Head pose estimation (posture)
     """
 
-    # MediaPipe Face Mesh landmark indices
+    # Face Landmarker indices (based on MediaPipe face mesh)
     # Left eye
     LEFT_EYE_OUTER = 33
     LEFT_EYE_INNER = 133
@@ -65,14 +81,21 @@ class FocusEngine:
         self.grace_period = grace_period
         self.unfocus_threshold = unfocus_threshold
 
-        # MediaPipe setup
-        self.mp_face_mesh = mp.solutions.face_mesh
-        self.face_mesh = self.mp_face_mesh.FaceMesh(
-            max_num_faces=1,
-            refine_landmarks=True,  # Enables iris tracking
-            min_detection_confidence=0.5,
+        # Download model if needed
+        download_model()
+
+        # MediaPipe Face Landmarker setup
+        base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
+        options = vision.FaceLandmarkerOptions(
+            base_options=base_options,
+            output_face_blendshapes=False,
+            output_facial_transformation_matrixes=False,
+            num_faces=1,
+            min_face_detection_confidence=0.5,
+            min_face_presence_confidence=0.5,
             min_tracking_confidence=0.5
         )
+        self.landmarker = vision.FaceLandmarker.create_from_options(options)
 
         # State
         self._smoothed_score = 1.0  # Start focused
@@ -92,27 +115,30 @@ class FocusEngine:
         Calculate normalized iris position within eye (0 = inner, 1 = outer).
         Returns 0.5 when looking straight ahead.
         """
-        eye_outer = landmarks[eye_outer_idx]
-        eye_inner = landmarks[eye_inner_idx]
-        iris = landmarks[iris_center_idx]
+        try:
+            eye_outer = landmarks[eye_outer_idx]
+            eye_inner = landmarks[eye_inner_idx]
+            iris = landmarks[iris_center_idx]
 
-        # Get x coordinates in pixel space
-        outer_x = eye_outer.x * img_width
-        inner_x = eye_inner.x * img_width
-        iris_x = iris.x * img_width
+            # Get x coordinates in pixel space
+            outer_x = eye_outer.x * img_width
+            inner_x = eye_inner.x * img_width
+            iris_x = iris.x * img_width
 
-        # Normalize iris position within eye bounds
-        eye_width = abs(outer_x - inner_x)
-        if eye_width < 1:
+            # Normalize iris position within eye bounds
+            eye_width = abs(outer_x - inner_x)
+            if eye_width < 1:
+                return 0.5
+
+            # Calculate relative position
+            if outer_x > inner_x:  # Left eye
+                position = (iris_x - inner_x) / eye_width
+            else:  # Right eye
+                position = (outer_x - iris_x) / eye_width
+
+            return np.clip(position, 0, 1)
+        except (IndexError, AttributeError):
             return 0.5
-
-        # Calculate relative position
-        if outer_x > inner_x:  # Left eye
-            position = (iris_x - inner_x) / eye_width
-        else:  # Right eye
-            position = (outer_x - iris_x) / eye_width
-
-        return np.clip(position, 0, 1)
 
     def _calculate_gaze_score(self, landmarks, img_width: int) -> float:
         """
@@ -148,37 +174,38 @@ class FocusEngine:
         """
         Calculate head posture score based on head tilt and position.
         """
-        # Get key landmarks
-        nose = landmarks[self.NOSE_TIP]
-        left_ear = landmarks[self.LEFT_EAR]
-        right_ear = landmarks[self.RIGHT_EAR]
-        forehead = landmarks[self.FOREHEAD]
-        chin = landmarks[self.CHIN]
+        try:
+            # Get key landmarks
+            nose = landmarks[self.NOSE_TIP]
+            left_ear = landmarks[self.LEFT_EAR]
+            right_ear = landmarks[self.RIGHT_EAR]
+            forehead = landmarks[self.FOREHEAD]
+            chin = landmarks[self.CHIN]
 
-        # Check horizontal tilt (roll) - ears should be level
-        ear_dy = abs(left_ear.y - right_ear.y)
-        roll_score = 1.0 - min(ear_dy * 5, 1.0)  # Penalize tilt
+            # Check horizontal tilt (roll) - ears should be level
+            ear_dy = abs(left_ear.y - right_ear.y)
+            roll_score = 1.0 - min(ear_dy * 5, 1.0)  # Penalize tilt
 
-        # Check if face is centered horizontally
-        face_center_x = nose.x
-        center_deviation_x = abs(face_center_x - 0.5) * 2
-        horizontal_score = 1.0 - min(center_deviation_x, 1.0)
+            # Check if face is centered horizontally
+            face_center_x = nose.x
+            center_deviation_x = abs(face_center_x - 0.5) * 2
+            horizontal_score = 1.0 - min(center_deviation_x, 1.0)
 
-        # Check vertical head tilt (pitch) using nose-forehead angle
-        # When looking down, chin moves up relative to nose
-        vertical_ratio = (chin.y - forehead.y)
-        # Normal ratio is around 0.15-0.25, looking down increases it
-        pitch_deviation = abs(vertical_ratio - 0.2) * 3
-        pitch_score = 1.0 - min(pitch_deviation, 1.0)
+            # Check vertical head tilt (pitch) using nose-forehead angle
+            vertical_ratio = (chin.y - forehead.y)
+            pitch_deviation = abs(vertical_ratio - 0.2) * 3
+            pitch_score = 1.0 - min(pitch_deviation, 1.0)
 
-        # Combine scores with weights
-        posture_score = (
-            roll_score * 0.3 +
-            horizontal_score * 0.4 +
-            pitch_score * 0.3
-        )
+            # Combine scores with weights
+            posture_score = (
+                roll_score * 0.3 +
+                horizontal_score * 0.4 +
+                pitch_score * 0.3
+            )
 
-        return np.clip(posture_score, 0, 1)
+            return np.clip(posture_score, 0, 1)
+        except (IndexError, AttributeError):
+            return 0.5
 
     def process_frame(self, frame: np.ndarray) -> FocusMetrics:
         """
@@ -188,9 +215,12 @@ class FocusEngine:
 
         # Convert to RGB for MediaPipe
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = self.face_mesh.process(rgb_frame)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
 
-        if not results.multi_face_landmarks:
+        # Detect face landmarks
+        result = self.landmarker.detect(mp_image)
+
+        if not result.face_landmarks:
             return FocusMetrics(
                 gaze_score=0.0,
                 posture_score=0.0,
@@ -198,7 +228,7 @@ class FocusEngine:
                 timestamp=time.time()
             )
 
-        landmarks = results.multi_face_landmarks[0].landmark
+        landmarks = result.face_landmarks[0]
 
         gaze_score = self._calculate_gaze_score(landmarks, img_width)
         posture_score = self._calculate_posture_score(landmarks, img_width, img_height)
@@ -268,10 +298,10 @@ class FocusEngine:
         """
         Draw debug visualization on frame.
         """
-        overlay = frame.copy()
         h, w = frame.shape[:2]
 
         # Semi-transparent background for text
+        overlay = frame.copy()
         cv2.rectangle(overlay, (10, 10), (300, 140), (0, 0, 0), -1)
         cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
 
@@ -324,7 +354,7 @@ class FocusEngine:
 
     def release(self):
         """Clean up resources."""
-        self.face_mesh.close()
+        self.landmarker.close()
 
 
 class MockFocusEngine:
