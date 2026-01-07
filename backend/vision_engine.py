@@ -36,6 +36,10 @@ class FocusMetrics:
     posture_score: float  # 0-1: how upright/centered the head is
     face_detected: bool
     timestamp: float
+    # Head position for interactive orb (normalized 0-1)
+    head_x: float = 0.5  # Horizontal position (0=left, 1=right)
+    head_y: float = 0.5  # Vertical position (0=top, 1=bottom)
+    head_tilt: float = 0.0  # Head tilt in degrees (-45 to 45)
 
 
 class FocusEngine:
@@ -207,6 +211,30 @@ class FocusEngine:
         except (IndexError, AttributeError):
             return 0.5
 
+    def _calculate_head_position(self, landmarks) -> tuple[float, float, float]:
+        """
+        Calculate head position and tilt for interactive orb.
+        Returns (head_x, head_y, head_tilt) all normalized.
+        """
+        try:
+            nose = landmarks[self.NOSE_TIP]
+            left_ear = landmarks[self.LEFT_EAR]
+            right_ear = landmarks[self.RIGHT_EAR]
+
+            # Head position (nose tip position, normalized 0-1)
+            head_x = nose.x
+            head_y = nose.y
+
+            # Head tilt (roll) based on ear positions
+            ear_dy = left_ear.y - right_ear.y
+            ear_dx = right_ear.x - left_ear.x
+            tilt_radians = np.arctan2(ear_dy, ear_dx)
+            head_tilt = np.degrees(tilt_radians)
+
+            return head_x, head_y, np.clip(head_tilt, -45, 45)
+        except (IndexError, AttributeError):
+            return 0.5, 0.5, 0.0
+
     def process_frame(self, frame: np.ndarray) -> FocusMetrics:
         """
         Process a single frame and return raw focus metrics.
@@ -232,12 +260,16 @@ class FocusEngine:
 
         gaze_score = self._calculate_gaze_score(landmarks, img_width)
         posture_score = self._calculate_posture_score(landmarks, img_width, img_height)
+        head_x, head_y, head_tilt = self._calculate_head_position(landmarks)
 
         return FocusMetrics(
             gaze_score=gaze_score,
             posture_score=posture_score,
             face_detected=True,
-            timestamp=time.time()
+            timestamp=time.time(),
+            head_x=head_x,
+            head_y=head_y,
+            head_tilt=head_tilt
         )
 
     def get_focus_score(self, metrics: FocusMetrics) -> float:

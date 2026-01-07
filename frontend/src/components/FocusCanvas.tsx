@@ -1,11 +1,14 @@
 import { Canvas } from '@react-three/fiber'
 import { AmbientOrb } from './AmbientOrb'
+import { Particles } from './Particles'
+import type { HeadPosition } from '../hooks/useFocusSocket'
 
 interface FocusCanvasProps {
   focusScore: number
+  head: HeadPosition
 }
 
-export function FocusCanvas({ focusScore }: FocusCanvasProps) {
+export function FocusCanvas({ focusScore, head }: FocusCanvasProps) {
   return (
     <div style={{ width: '100vw', height: '100vh', background: '#0a0a0a' }}>
       <Canvas
@@ -19,7 +22,12 @@ export function FocusCanvas({ focusScore }: FocusCanvasProps) {
         <ambientLight intensity={0.3} />
         <pointLight position={[10, 10, 10]} intensity={1} />
         <pointLight position={[-10, -10, -10]} intensity={0.5} />
-        <AmbientOrb focusScore={focusScore} />
+
+        {/* Particles around the orb */}
+        <Particles focusScore={focusScore} head={head} />
+
+        {/* Main orb */}
+        <AmbientOrb focusScore={focusScore} head={head} />
       </Canvas>
     </div>
   )

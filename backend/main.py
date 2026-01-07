@@ -15,6 +15,7 @@ import cv2
 import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from vision_engine import FocusEngine, MockFocusEngine, FocusMetrics
 
@@ -35,6 +36,15 @@ class FocusServer:
         self.raw_score: float = 1.0
         self.is_grace_active: bool = False
         self.face_detected: bool = False
+
+        # Head position for interactive orb
+        self.head_x: float = 0.5
+        self.head_y: float = 0.5
+        self.head_tilt: float = 0.0
+
+        # Latest frame for video streaming
+        self._latest_frame: Optional[np.ndarray] = None
+        self._frame_lock = threading.Lock()
 
         # Session tracking
         self.session_start: float = 0
@@ -103,18 +113,26 @@ class FocusServer:
 
             if self.mock_mode:
                 score = self._mock_engine.get_focus_score()
-                self._update_state(score, score, False, True)
+                self._update_state(score, score, False, True, 0.5, 0.5, 0.0)
             else:
                 ret, frame = self._capture.read()
                 if ret:
                     frame = cv2.flip(frame, 1)
+
+                    # Store frame for video streaming
+                    with self._frame_lock:
+                        self._latest_frame = frame.copy()
+
                     metrics = self._engine.process_frame(frame)
                     score = self._engine.get_focus_score(metrics)
                     self._update_state(
                         score,
                         self._engine.raw_score,
                         self._engine.is_grace_active,
-                        metrics.face_detected
+                        metrics.face_detected,
+                        metrics.head_x,
+                        metrics.head_y,
+                        metrics.head_tilt
                     )
 
             # Maintain target framerate
@@ -127,7 +145,10 @@ class FocusServer:
         score: float,
         raw_score: float,
         grace_active: bool,
-        face_detected: bool
+        face_detected: bool,
+        head_x: float = 0.5,
+        head_y: float = 0.5,
+        head_tilt: float = 0.0
     ):
         """Update focus state and track session metrics."""
         current_time = time.time()
@@ -137,6 +158,9 @@ class FocusServer:
             self.raw_score = raw_score
             self.is_grace_active = grace_active
             self.face_detected = face_detected
+            self.head_x = head_x
+            self.head_y = head_y
+            self.head_tilt = head_tilt
 
             # Track focused time
             dt = current_time - self._last_update
@@ -166,6 +190,11 @@ class FocusServer:
                 "raw_score": round(self.raw_score, 3),
                 "grace_active": self.is_grace_active,
                 "face_detected": self.face_detected,
+                "head": {
+                    "x": round(self.head_x, 3),
+                    "y": round(self.head_y, 3),
+                    "tilt": round(self.head_tilt, 1)
+                },
                 "session": {
                     "duration": round(session_duration, 1),
                     "focused_time": round(self.focused_time, 1),
@@ -208,6 +237,16 @@ class FocusServer:
             self.clients.remove(websocket)
         print(f"Client disconnected. Total clients: {len(self.clients)}")
 
+    def get_frame_jpeg(self) -> Optional[bytes]:
+        """Get the latest frame as JPEG bytes for streaming."""
+        with self._frame_lock:
+            if self._latest_frame is None:
+                return None
+            # Resize for streaming (smaller = faster)
+            frame = cv2.resize(self._latest_frame, (320, 180))
+            _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            return jpeg.tobytes()
+
 
 # Global server instance
 server: Optional[FocusServer] = None
@@ -248,6 +287,26 @@ async def get_session():
     if not server:
         return {"error": "Server not initialized"}
     return server.get_session_summary()
+
+
+@app.get("/video")
+async def video_feed():
+    """MJPEG video stream for PiP camera preview."""
+    if not server or server.mock_mode:
+        return {"error": "Video not available in mock mode"}
+
+    def generate():
+        while True:
+            frame = server.get_frame_jpeg()
+            if frame:
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+            time.sleep(0.066)  # ~15fps for PiP (lower to save bandwidth)
+
+    return StreamingResponse(
+        generate(),
+        media_type='multipart/x-mixed-replace; boundary=frame'
+    )
 
 
 @app.websocket("/ws")

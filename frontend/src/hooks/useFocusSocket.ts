@@ -6,11 +6,18 @@ export interface SessionData {
   focus_percentage: number
 }
 
+export interface HeadPosition {
+  x: number  // 0-1, horizontal position
+  y: number  // 0-1, vertical position
+  tilt: number  // degrees, head tilt
+}
+
 export interface FocusState {
   focusScore: number
   rawScore: number
   graceActive: boolean
   faceDetected: boolean
+  head: HeadPosition
   session: SessionData
   connected: boolean
 }
@@ -24,6 +31,11 @@ const INITIAL_STATE: FocusState = {
   rawScore: 1.0,
   graceActive: false,
   faceDetected: false,
+  head: {
+    x: 0.5,
+    y: 0.5,
+    tilt: 0,
+  },
   session: {
     duration: 0,
     focused_time: 0,
@@ -62,6 +74,11 @@ export function useFocusSocket() {
           rawScore: data.raw_score,
           graceActive: data.grace_active,
           faceDetected: data.face_detected,
+          head: {
+            x: data.head?.x ?? 0.5,
+            y: data.head?.y ?? 0.5,
+            tilt: data.head?.tilt ?? 0,
+          },
           session: {
             duration: data.session.duration,
             focused_time: data.session.focused_time,

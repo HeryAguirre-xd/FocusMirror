@@ -1,14 +1,18 @@
 import { useFocusSocket } from './hooks/useFocusSocket'
 import { FocusCanvas } from './components/FocusCanvas'
 import { SessionOverlay } from './components/SessionOverlay'
+import { CameraPreview } from './components/CameraPreview'
 
 function App() {
-  const { focusScore, session, connected, requestSessionSummary } = useFocusSocket()
+  const { focusScore, head, session, connected, requestSessionSummary } = useFocusSocket()
 
   return (
     <div className="w-full h-full relative">
       {/* Main ambient canvas */}
-      <FocusCanvas focusScore={focusScore} />
+      <FocusCanvas focusScore={focusScore} head={head} />
+
+      {/* PiP camera preview */}
+      <CameraPreview connected={connected} />
 
       {/* Session stats overlay (Escape key) */}
       <SessionOverlay
